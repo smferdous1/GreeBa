@@ -2,7 +2,9 @@
 
 #include "ortools/graph/min_cost_flow.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <stdexcept>
 #include <unordered_set>
 #include <vector>
@@ -22,8 +24,10 @@ MatchingResult anstee_bipartite_b_matching(
         throw std::invalid_argument("n_u out of range");
     if (static_cast<int>(b.size()) != n)
         throw std::invalid_argument("b.size() must equal adj.size()");
+    if (std::any_of(b.begin(), b.end(), [](int value) { return value < 0; }))
+        throw std::invalid_argument("capacities must be non-negative");
 
-    // Collect edges (u in U, v in V) without duplicates.
+    // Read each U-side entry once; reverse adjacency entries are ignored.
     struct RawEdge { int u, v, w; };
     std::vector<RawEdge> edges;
     for (int u = 0; u < n_u; ++u) {
@@ -46,7 +50,7 @@ MatchingResult anstee_bipartite_b_matching(
     operations_research::SimpleMinCostFlow smcf;
 
     // Two arcs per edge: R(u)->S(v) with cost -w and R(v)->S(u) with cost -w.
-    // (Costs are negated so that min-cost max-flow maximises weight.)
+    // Costs are negated so that minimum cost maximises matching weight.
     std::vector<int> arc_fwd(m, -1), arc_rev(m, -1);
     for (int e = 0; e < m; ++e) {
         const int cap = simple ? 1 : std::min(b[edges[e].u], b[edges[e].v]);
@@ -56,7 +60,7 @@ MatchingResult anstee_bipartite_b_matching(
     }
 
     // Supply/demand arcs: s->R(x) and S(x)->t, each with capacity b[x].
-    int total_supply = 0;
+    int64_t total_supply = 0;
     for (int x = 0; x < n; ++x) {
         if (b[x] > 0) {
             smcf.AddArcWithCapacityAndUnitCost(s, R(x), b[x], 0);
@@ -64,10 +68,15 @@ MatchingResult anstee_bipartite_b_matching(
             total_supply += b[x];
         }
     }
+    // Route unused capacity directly to the sink at zero cost. Without this
+    // bypass, SolveMaxFlowWithMinCost prioritizes cardinality, which can force
+    // two light edges in place of one heavier edge. Fix the total flow and
+    // let minimum cost choose how much passes through actual graph edges.
+    smcf.AddArcWithCapacityAndUnitCost(s, t, total_supply, 0);
     smcf.SetNodeSupply(s, total_supply);
     smcf.SetNodeSupply(t, -total_supply);
 
-    if (smcf.SolveMaxFlowWithMinCost() != operations_research::SimpleMinCostFlow::OPTIMAL)
+    if (smcf.Solve() != operations_research::SimpleMinCostFlow::OPTIMAL)
         throw std::runtime_error("OR-Tools SimpleMinCostFlow did not reach OPTIMAL");
 
     // ---- Stage 2a: symmetrize to x2[e] = 2*x_{uv} (always an integer) ----

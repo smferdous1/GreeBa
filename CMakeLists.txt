@@ -10,5 +10,7 @@ list(APPEND CMAKE_PREFIX_PATH /opt/homebrew)
 list(APPEND CMAKE_MODULE_PATH /opt/homebrew/Cellar/or-tools/9.15_6/lib/cmake/ortools/modules)
 find_package(ortools CONFIG REQUIRED)
 
+include(CTest)
+
 add_subdirectory(src)
 add_subdirectory(app)

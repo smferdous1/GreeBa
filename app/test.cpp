@@ -1,6 +1,8 @@
 #include "GreeBa/genGraph.h"
 #include "greedy_b_matching.h"
 #include "anstee_b_matching.h"
+#include "reduction_b_matching.h"
+#include "milp_b_matching.h"
 
 #include <algorithm>
 #include <iostream>
@@ -46,5 +48,25 @@ int main() {
     std::cout << "\nAnstee weight >= Greedy weight: "
               << (anstee.totalWeight >= greedy.totalWeight ? "YES" : "NO") << std::endl;
 
-    return 0;
+    const auto reduced = reduction_bipartite_b_matching(adj, n_u, b);
+    std::cout << "\nReduction to exact 1-matching:\n"
+              << "  matched edges: " << reduced.edges.size() << '\n'
+              << "  total weight:  " << reduced.totalWeight << '\n';
+    for (const auto& edge : reduced.edges)
+        std::cout << "    " << edge.u << " -- " << edge.v
+                  << " (w=" << edge.weight << ")\n";
+
+    const auto milp = milp_bipartite_b_matching(adj, n_u, b);
+    std::cout << "\nMILP b-matching (SCIP):\n"
+              << "  matched edges: " << milp.edges.size() << '\n'
+              << "  total weight:  " << milp.totalWeight << '\n';
+    for (const auto& edge : milp.edges)
+        std::cout << "    " << edge.u << " -- " << edge.v
+                  << " (w=" << edge.weight << ")\n";
+
+    const bool same_weight = anstee.totalWeight == reduced.totalWeight &&
+                             anstee.totalWeight == milp.totalWeight;
+    std::cout << "\nAnstee weight == Reduction weight == MILP weight: "
+              << (same_weight ? "YES" : "NO") << '\n';
+    return same_weight ? 0 : 1;
 }

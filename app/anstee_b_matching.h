@@ -14,6 +14,8 @@
 // b      : per-vertex capacity vector (length == adj.size()).
 // simple : if true, each edge may be selected at most once (x_e in {0,1}).
 //          if false, x_e in {0..min(b_u, b_v)}.
+// Weights and capacities must be nonnegative. Unused capacity is allowed;
+// the objective maximizes total weight without a cardinality requirement.
 //
 // Returns a MatchingResult whose edges list contains one MatchingEdge per
 // unit of multiplicity (e.g. if x_{uv}=2, two identical entries appear).
