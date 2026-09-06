@@ -19,6 +19,11 @@
 //
 // Returns a MatchingResult whose edges list contains one MatchingEdge per
 // unit of multiplicity (e.g. if x_{uv}=2, two identical entries appear).
+// Result construction therefore takes O(K) time and space for K selected units.
+// The total selected weight must fit in long long; aggregate weight overflow
+// is not checked. Scaled edge values use int64_t, and unsupported graph sizes
+// are rejected before node/arc index arithmetic. Stage 2 rounding takes O(n+m)
+// time and auxiliary space; this is not a bound on the flow solver.
 
 MatchingResult anstee_bipartite_b_matching(
     const std::vector<std::vector<std::pair<int, int>>>& adj,

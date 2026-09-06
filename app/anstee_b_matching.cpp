@@ -1,12 +1,12 @@
 #include "anstee_b_matching.h"
+#include "anstee_numeric_detail.h"
+#include "anstee_rounding_detail.h"
 
 #include "ortools/graph/min_cost_flow.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cstdint>
 #include <stdexcept>
-#include <unordered_set>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -18,11 +18,8 @@ MatchingResult anstee_bipartite_b_matching(
     const std::vector<int>& b,
     bool simple)
 {
-    const int n = static_cast<int>(adj.size());
-    const int n_v = n - n_u;
-    if (n_u < 0 || n_v < 0)
-        throw std::invalid_argument("n_u out of range");
-    if (static_cast<int>(b.size()) != n)
+    const int n = anstee_numeric_detail::checked_partition_size(adj.size(), n_u);
+    if (b.size() != adj.size())
         throw std::invalid_argument("b.size() must equal adj.size()");
     if (std::any_of(b.begin(), b.end(), [](int value) { return value < 0; }))
         throw std::invalid_argument("capacities must be non-negative");
@@ -30,7 +27,10 @@ MatchingResult anstee_bipartite_b_matching(
     // Read each U-side entry once; reverse adjacency entries are ignored.
     struct RawEdge { int u, v, w; };
     std::vector<RawEdge> edges;
+    const std::size_t max_edges = anstee_numeric_detail::max_input_edges(n);
     for (int u = 0; u < n_u; ++u) {
+        if (adj[u].size() > max_edges - edges.size())
+            throw std::length_error("graph too large for Anstee flow arc indices");
         for (auto& [v, w] : adj[u]) {
             if (v < n_u || v >= n)
                 throw std::out_of_range("edge references vertex outside V");
@@ -80,90 +80,19 @@ MatchingResult anstee_bipartite_b_matching(
         throw std::runtime_error("OR-Tools SimpleMinCostFlow did not reach OPTIMAL");
 
     // ---- Stage 2a: symmetrize to x2[e] = 2*x_{uv} (always an integer) ----
-    std::vector<int> x2(m, 0);
+    std::vector<int64_t> x2(m, 0);
     for (int e = 0; e < m; ++e) {
-        int a_fwd = (arc_fwd[e] >= 0) ? static_cast<int>(smcf.Flow(arc_fwd[e])) : 0;
-        int a_rev = (arc_rev[e] >= 0) ? static_cast<int>(smcf.Flow(arc_rev[e])) : 0;
-        x2[e] = a_fwd + a_rev;
+        x2[e] = anstee_numeric_detail::symmetrized_flow(smcf, arc_fwd[e], arc_rev[e]);
     }
 
     // ---- Stage 2b: resolve half-integral edges via alternating trails ----
-    // H = {edges with x2[e] odd}.  We work with x2 scaled by 2 throughout:
-    // alternation subtracts 1 from even-indexed trail positions and adds 1 to
-    // odd-indexed ones.  After resolution every x2[e] is even (= 2 * x_{uv}).
-
-    // Build adjacency for H.
-    std::vector<std::vector<std::pair<int, int>>> H_adj(n); // vertex -> [(nbr, edge_idx)]
-    std::unordered_set<int> H_rem;
-    for (int e = 0; e < m; ++e) {
-        if (x2[e] % 2 == 1) {
-            H_adj[edges[e].u].emplace_back(edges[e].v, e);
-            H_adj[edges[e].v].emplace_back(edges[e].u, e);
-            H_rem.insert(e);
-        }
-    }
-
-    auto deg_in_H = [&](int v) {
-        int d = 0;
-        for (auto& [nbr, eidx] : H_adj[v])
-            if (H_rem.count(eidx)) ++d;
-        return d;
-    };
-
-    // Walk a maximal trail from `start`, removing traversed edges from H_rem.
-    auto find_trail = [&](int start) {
-        std::vector<int> trail;
-        int cur = start;
-        for (;;) {
-            int found_e = -1, found_nbr = -1;
-            for (auto& [nbr, eidx] : H_adj[cur]) {
-                if (H_rem.count(eidx)) { found_e = eidx; found_nbr = nbr; break; }
-            }
-            if (found_e < 0) break;
-            trail.push_back(found_e);
-            H_rem.erase(found_e);
-            cur = found_nbr;
-        }
-        return trail;
-    };
-
-    // Anstee eq. (7): 0-indexed position i even -> x2 -= 1, odd -> x2 += 1.
-    auto apply_alt = [&](const std::vector<int>& trail) {
-        for (int i = 0; i < static_cast<int>(trail.size()); ++i) {
-            if (i % 2 == 0) x2[trail[i]] -= 1;
-            else             x2[trail[i]] += 1;
-        }
-    };
-
-    // Step 1: eliminate odd-degree vertices in H via maximal trails.
-    // Each iteration finds one odd-degree vertex and walks until stuck.
-    // By Eulerian trail theory, the walk must end at another odd-degree vertex,
-    // reducing the count of odd-degree vertices by 2 per iteration.
-    for (;;) {
-        int odd_v = -1;
-        for (int v = 0; v < n && odd_v < 0; ++v)
-            if (deg_in_H(v) & 1) odd_v = v;
-        if (odd_v < 0) break;
-        auto trail = find_trail(odd_v);
-        if (trail.empty()) break;
-        apply_alt(trail);
-    }
-
-    // Step 2: H now has all even degrees; decompose into closed trails.
-    // Bipartite H guarantees all closed trails have even length.
-    while (!H_rem.empty()) {
-        int e0 = *H_rem.begin();
-        auto trail = find_trail(edges[e0].u);
-        assert(trail.size() % 2 == 0); // even-length closed trail in bipartite H
-        apply_alt(trail);
-    }
+    anstee_detail::round_half_integral(n, edges, x2);
 
     // ---- Build result ----
     MatchingResult result;
     result.degree.assign(n, 0);
     for (int e = 0; e < m; ++e) {
-        assert(x2[e] >= 0 && x2[e] % 2 == 0);
-        const int xval = x2[e] / 2;
+        const int xval = anstee_numeric_detail::checked_multiplicity(x2[e]);
         if (xval > 0) {
             const auto& [u, v, w] = edges[e];
             for (int k = 0; k < xval; ++k)
@@ -187,6 +116,7 @@ MatchingResult anstee_bipartite_b_matching(
 {
     if (capacity < 0)
         throw std::invalid_argument("capacity must be non-negative");
+    anstee_numeric_detail::checked_partition_size(adj.size(), n_u);
     return anstee_bipartite_b_matching(
         adj, n_u, std::vector<int>(adj.size(), capacity), simple);
 }
