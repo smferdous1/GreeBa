@@ -8,6 +8,16 @@ add_executable(test_app
 target_link_libraries(test_app GreeBaLib ortools::ortools)
 
 if(BUILD_TESTING)
+    add_executable(preprocessing_tests
+        preprocessing_tests.cpp
+        greedy_b_matching.cpp
+        anstee_b_matching.cpp
+        reduction_b_matching.cpp
+        milp_b_matching.cpp
+    )
+    target_link_libraries(preprocessing_tests GreeBaLib ortools::ortools)
+    add_test(NAME capacity_preprocessing COMMAND preprocessing_tests)
+
     add_executable(anstee_rounding_tests anstee_rounding_tests.cpp)
     add_test(NAME anstee_rounding COMMAND anstee_rounding_tests)
 

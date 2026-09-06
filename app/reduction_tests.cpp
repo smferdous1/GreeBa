@@ -2,6 +2,7 @@
 #include "anstee_b_matching.h"
 #include "milp_b_matching.h"
 #include "GreeBa/genGraph.h"
+#include "b_matching_preprocessing.h"
 
 #include <algorithm>
 #include <iostream>
@@ -84,9 +85,10 @@ void verify(const std::vector<MatchingEdge>& edges, int n_u,
 
 void verify_generated(int n, int b, int M) {
     const auto [adj, n_u, n_v] = make_greeba_bpt(n, b, M);
-    const auto anstee = anstee_bipartite_b_matching(adj, n_u, b);
-    const auto reduced = reduction_bipartite_b_matching(adj, n_u, b);
-    const auto milp = milp_bipartite_b_matching(adj, n_u, b);
+    const auto effective = clamp_bipartite_capacities(adj, n_u, b);
+    const auto anstee = anstee_bipartite_b_matching(adj, n_u, effective);
+    const auto reduced = reduction_bipartite_b_matching(adj, n_u, effective);
+    const auto milp = milp_bipartite_b_matching(adj, n_u, effective);
     if (anstee.totalWeight != reduced.totalWeight || anstee.totalWeight != milp.totalWeight) {
         std::cerr << "Generated graph n=" << n << " b=" << b << " M=" << M
                   << ": Anstee=" << anstee.totalWeight

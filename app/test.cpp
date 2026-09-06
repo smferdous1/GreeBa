@@ -1,4 +1,5 @@
 #include "GreeBa/genGraph.h"
+#include "b_matching_preprocessing.h"
 #include "greedy_b_matching.h"
 #include "anstee_b_matching.h"
 #include "reduction_b_matching.h"
@@ -12,6 +13,8 @@ int main() {
     int b = 2;
     int M = 100;
     auto [adj, n_u, n_v] = make_greeba_bpt(n, b, M);
+    // Preprocess once after generation, then use the same b_v in all solvers.
+    const auto capacity = clamp_bipartite_capacities(adj, n_u, b);
     std::cout << "Number of vertices: " << adj.size() << std::endl;
     std::cout << "n_u: " << n_u << ", n_v: " << n_v << std::endl;
     std::cout << "Adjacency list for first 5 vertices:" << std::endl;
@@ -23,7 +26,7 @@ int main() {
         std::cout << std::endl;
     }
 
-    const auto greedy = greedy_weighted_b_matching(adj, b);
+    const auto greedy = greedy_weighted_b_matching(adj, capacity);
     std::cout << "\nGreedy weighted b-matching:" << std::endl;
     std::cout << "  matched edges: " << greedy.edges.size() << std::endl;
     std::cout << "  total weight:  " << greedy.totalWeight << std::endl;
@@ -34,7 +37,7 @@ int main() {
                   << " (w=" << edge.weight << ")" << std::endl;
     }
 
-    const auto anstee = anstee_bipartite_b_matching(adj, n_u, b, /*simple=*/true);
+    const auto anstee = anstee_bipartite_b_matching(adj, n_u, capacity, /*simple=*/true);
     std::cout << "\nAnstee exact b-matching:" << std::endl;
     std::cout << "  matched edges: " << anstee.edges.size() << std::endl;
     std::cout << "  total weight:  " << anstee.totalWeight << std::endl;
@@ -48,7 +51,7 @@ int main() {
     std::cout << "\nAnstee weight >= Greedy weight: "
               << (anstee.totalWeight >= greedy.totalWeight ? "YES" : "NO") << std::endl;
 
-    const auto reduced = reduction_bipartite_b_matching(adj, n_u, b);
+    const auto reduced = reduction_bipartite_b_matching(adj, n_u, capacity);
     std::cout << "\nReduction to exact 1-matching:\n"
               << "  matched edges: " << reduced.edges.size() << '\n'
               << "  total weight:  " << reduced.totalWeight << '\n';
@@ -56,7 +59,7 @@ int main() {
         std::cout << "    " << edge.u << " -- " << edge.v
                   << " (w=" << edge.weight << ")\n";
 
-    const auto milp = milp_bipartite_b_matching(adj, n_u, b);
+    const auto milp = milp_bipartite_b_matching(adj, n_u, capacity);
     std::cout << "\nMILP b-matching (SCIP):\n"
               << "  matched edges: " << milp.edges.size() << '\n'
               << "  total weight:  " << milp.totalWeight << '\n';

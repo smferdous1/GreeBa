@@ -9,6 +9,44 @@ A C++17 library implementing greedy and exact maximum-weight **b-matching** algo
 - **Reduction to 1-matching** — exact maximum-weight b-matching on bipartite graphs using the vertex-copy and edge-gadget construction in Appendix B of Ferdous, *Algorithms for Degree-Constrained Subgraphs and Applications* (pp. 156–160).
 - **MILP b-matching** — an independent integer programming formulation solved by SCIP through OR-Tools, used to verify the two exact combinatorial implementations.
 
+### Shared capacity preprocessing
+
+Before running **simple** b-matching, use [`clamp_bipartite_capacities`](app/b_matching_preprocessing.h)
+to replace each capacity with `min(b(v), degree(v))`. Generate the graph first,
+then compute this vector once and pass it to **greedy, Anstee, reduction, and MILP**:
+
+```cpp
+#include "GreeBa/genGraph.h"
+#include "b_matching_preprocessing.h"
+#include "greedy_b_matching.h"
+#include "anstee_b_matching.h"
+#include "reduction_b_matching.h"
+#include "milp_b_matching.h"
+
+auto [adj, n_u, n_v] = make_greeba_bpt(n, b, M);
+const auto capacity = clamp_bipartite_capacities(adj, n_u, b);
+// A vector of per-vertex capacities can replace the scalar b above.
+auto greedy = greedy_weighted_b_matching(adj, capacity);
+auto anstee = anstee_bipartite_b_matching(adj, n_u, capacity, true);
+auto reduction = reduction_bipartite_b_matching(adj, n_u, capacity);
+auto milp = milp_bipartite_b_matching(adj, n_u, capacity, true);
+```
+
+This is a separate preprocessing step; the solver APIs use the capacities they
+receive. It preserves every feasible simple matching and its weight because
+each incident input edge can be selected at most once. Isolates get capacity
+zero. The helper reads U-side entries once, counting both endpoints, so reverse
+rows are optional and do not double-count degrees. Parallel input entries count
+as distinct edges. Degree counters saturate at the requested capacity to avoid
+integer overflow. Time is `O(n+m)` and extra space is `O(n)`.
+
+The generator's `b`, graph topology, weights, and original capacity vector are
+not changed. The reduction size formulas below use the **effective capacities
+passed to the solver**. Do not apply this degree bound to `simple=false`, which
+allows repeated selection of an edge. CTest's `capacity_preprocessing` checks
+feasible-set preservation and all four algorithms, including isolates,
+parallel edges, optional reverse rows, and `INT_MAX` capacities.
+
 ### Anstee rounding and numeric limits
 
 Anstee reads each U-side adjacency entry as a distinct edge, including parallel entries; reverse adjacency rows are optional. A zero-cost source-to-sink bypass permits unused capacity.
@@ -35,10 +73,13 @@ Each edge can be selected at most once, and vertices may leave capacity unused. 
 
 ```cpp
 #include "milp_b_matching.h"
+#include "b_matching_preprocessing.h"
 
-auto milp = milp_bipartite_b_matching(adj, n_u, b);
+auto effective = clamp_bipartite_capacities(adj, n_u, b);
+auto milp = milp_bipartite_b_matching(adj, n_u, effective);
 // Per-vertex capacities are also supported:
-auto milp_vector = milp_bipartite_b_matching(adj, n_u, capacities);
+auto effective_vector = clamp_bipartite_capacities(adj, n_u, capacities);
+auto milp_vector = milp_bipartite_b_matching(adj, n_u, effective_vector);
 ```
 
 The MILP reads only U-side adjacency entries, using one variable per entry; reverse entries are optional and parallel entries represent distinct edges. Weights and capacities must be nonnegative integers. It returns `MatchingResult`, requests zero relative MIP gap, requires SCIP's `OPTIMAL` status, and checks the solution's integrality and capacity constraints before returning. Unlike the flow solvers, SCIP uses floating-point numerical tolerances. The comparison tests recompute selected-edge weights as integers and require exact equality of all three totals; optimal edge sets may differ when there are ties.
@@ -56,9 +97,10 @@ The reduced graph has `sum_v b(v) + 2|E|` vertices and `|E| + sum_v degree(v)b(v
 
 ```cpp
 #include "reduction_b_matching.h"
+#include "b_matching_preprocessing.h"
 
-// U vertices precede V vertices in adj. A scalar capacity also works.
-std::vector<int> capacities(adj.size(), b);
+// U vertices precede V vertices in adj. Preprocess after graph generation.
+const auto capacities = clamp_bipartite_capacities(adj, n_u, b);
 auto result = reduction_bipartite_b_matching(adj, n_u, capacities);
 ```
 
@@ -214,7 +256,7 @@ cmake --build build
 ./build/app/test_app
 ```
 
-The example generates a deterministic GreeBa bipartite graph, runs greedy, Anstee, reduction, and MILP matching, and prints the matched edges and total weight for each. It checks that Anstee, the reduction, and the MILP return equal weights and exits with an error if they differ.
+The example generates a deterministic GreeBa bipartite graph, clamps capacities once, passes the same vector to greedy, Anstee, reduction, and MILP matching, and prints the matched edges and total weight for each. It checks that Anstee, the reduction, and the MILP return equal weights and exits with an error if they differ.
 
 Run the matching tests, including 195 generated-graph comparisons between Anstee, the reduction, and the MILP (`b` from 1 to 4 and `M` in `{1, 2, 3, 100}`), exhaustive comparisons for all three solvers on 300 small random graphs, and 100 random exhaustive checks of Anstee and MILP edge-multiplicity modes:
 
@@ -228,6 +270,8 @@ ctest --test-dir build --output-on-failure
 .
 ├── app/                  # Executable and algorithm implementations
 │   ├── greedy_b_matching.cpp/h
+│   ├── b_matching_preprocessing.h
+│   ├── preprocessing_tests.cpp
 │   ├── anstee_b_matching.cpp/h
 │   ├── anstee_numeric_detail.h
 │   ├── anstee_numeric_tests.cpp
