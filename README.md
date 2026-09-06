@@ -9,6 +9,18 @@ A C++17 library implementing greedy and exact maximum-weight **b-matching** algo
 - **Reduction to 1-matching** — exact maximum-weight b-matching on bipartite graphs using the vertex-copy and edge-gadget construction in Appendix B of Ferdous, *Algorithms for Degree-Constrained Subgraphs and Applications* (pp. 156–160).
 - **MILP b-matching** — an independent integer programming formulation solved by SCIP through OR-Tools, used to verify the two exact combinatorial implementations.
 
+### Anstee rounding and numeric limits
+
+Anstee reads each U-side adjacency entry as a distinct edge, including parallel entries; reverse adjacency rows are optional. A zero-cost source-to-sink bypass permits unused capacity.
+
+The two directed flow values and their symmetrized sum `x2 = 2*x` use `int64_t`. Stage 2 rounds fractional edges using residual degree counters, a list of initially odd vertices, per-vertex adjacency cursors, and per-edge active flags. Each adjacency entry is inspected at most once and each fractional edge is traversed once, so rounding takes `O(n+m)` time and auxiliary space. This bound covers Stage 2 only: OR-Tools uses its own cost-scaling flow algorithm, and this implementation does not claim the paper's full strongly-polynomial bound.
+
+Weights and per-vertex capacities must be nonnegative `int` values. Invalid partitions are rejected before arithmetic or narrowing. Oversized graphs are rejected before constructing node or arc indices; the conservative bounds reserve room for the auxiliary nodes/arcs used by OR-Tools. Output multiplicities are checked before conversion back to `int`. The returned total weight must fit in `long long`; aggregate result-weight overflow is not currently checked. OR-Tools also has internal numeric limits, and failure to reach `OPTIMAL` is reported as an exception.
+
+`MatchingResult::edges` contains one entry per selected unit of multiplicity. If `K` units are selected, result construction requires `O(K)` time and storage; a large capacity can therefore be impractical even though symmetrization itself is safe. The numeric regression solves the real large-capacity flow and calls the production symmetrization helper without expanding the result.
+
+CTest includes `anstee_numeric` and `anstee_rounding` alongside the existing matching suite. The rounding tests exercise open and closed trails, parallel entries, leftover cycles, 64-bit scaled values, averages of independently enumerated optimal matchings, and operation-count bounds on growing fixtures.
+
 ### Bipartite b-matching MILP
 
 For a bipartite graph `G = (U ∪ V, E)`, let `x_e` indicate whether edge `e` is selected. The model in [`milp_b_matching.cpp`](app/milp_b_matching.cpp) is:
@@ -72,7 +84,10 @@ For example, `make_greeba_bpt(24, 2, 100)` builds two blocks with 12 vertices pe
 
 - CMake ≥ 3.10
 - C++17 compiler
-- [OR-Tools](https://developers.google.com/optimization) with the SCIP MILP backend (installed via Homebrew: `brew install or-tools`)
+- [OR-Tools](https://developers.google.com/optimization) C++ headers, libraries, and CMake package, built with the SCIP MILP backend
+- `pkg-config` (provided by `pkgconf` on Homebrew) when required by the installed OR-Tools dependency packages
+
+`pip install ortools` installs the Python package; it does not provide the C++ headers and CMake package needed to build this project. GreeBa's CMake configuration finds an existing C++ installation; it does not download or install OR-Tools.
 
 ## Install OR-Tools
 
@@ -87,7 +102,7 @@ For example, `make_greeba_bpt(24, 2, 100)` builds two blocks with 12 vertices pe
 2. Install [Homebrew](https://brew.sh/) if needed, then install CMake and the OR-Tools C++ library:
 
    ```bash
-   brew install cmake or-tools
+   brew install cmake pkgconf or-tools
    ```
 
    The [Homebrew OR-Tools package](https://formulae.brew.sh/formula/or-tools) includes SCIP as a dependency, which this project's MILP solver requires.
@@ -95,19 +110,96 @@ For example, `make_greeba_bpt(24, 2, 100)` builds two blocks with 12 vertices pe
 3. From the GreeBa project directory, configure and build using your Homebrew installation paths:
 
    ```bash
-   cmake -S . -B build \
-     -DCMAKE_PREFIX_PATH="$(brew --prefix)" \
-     -DCMAKE_MODULE_PATH="$(brew --prefix or-tools)/lib/cmake/ortools/modules"
+   cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix)"
    cmake --build build
    ctest --test-dir build --output-on-failure
    ./build/app/test_app
    ```
 
-   These paths let CMake locate OR-Tools and its dependency modules without relying on the Apple Silicon and version-specific paths currently in `CMakeLists.txt`. The tests exercise both min-cost flow and the SCIP MILP backend. The default example should report weight **1588** for Anstee, reduction, and MILP, followed by an equality check of **YES**.
+   The prefix is supplied at configure time; no Homebrew or version-specific paths are embedded in `CMakeLists.txt`. OR-Tools supplies its own dependency module paths. The tests exercise both min-cost flow and the SCIP MILP backend. The default example should report weight **1588** for Anstee, reduction, and MILP, followed by an equality check of **YES**.
+
+### Linux clusters
+
+Use an OR-Tools C++ installation built for the cluster, with SCIP support and its dependencies available. If the cluster provides environment modules, load its compiler, CMake, and OR-Tools modules first; module names depend on the site. Keep that environment loaded when running the executable, including inside a batch job.
+
+#### If the cluster does not provide OR-Tools
+
+Install OR-Tools under your own account once, then point GreeBa at that installation. No administrator access or Homebrew is needed. The recipe below pins OR-Tools to `v9.15` and follows its [Linux source-build instructions](https://developers.google.com/optimization/install/cpp/source_linux) and [versioned CMake requirements](https://github.com/google/or-tools/blob/v9.15/cmake/README.md#requirement).
+
+First load the cluster's C/C++ compiler and CMake modules. This OR-Tools release requires **CMake 3.24 or newer**; its build documentation calls for **GCC 10 or newer**, or an equivalent supported compiler. You also need Git and a build tool such as Make. The clone and configuration steps need internet access to fetch OR-Tools and its dependencies. Use source, build, and installation paths without spaces, with enough storage for a dependency build.
+
+Run the following on the cluster in Bash, using an allocation suitable for compilation. These commands preserve your current working directory:
+
+```bash
+greeba_ortools_src="$HOME/src/or-tools-9.15"
+greeba_ortools_prefix="$HOME/.local/or-tools-9.15"
+mkdir -p "$HOME/src"
+
+# Clone once; on a later build, reuse this source directory.
+git clone --depth 1 --branch v9.15 \
+  https://github.com/google/or-tools.git "$greeba_ortools_src"
+
+cmake -S "$greeba_ortools_src" -B "$greeba_ortools_src/build" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$greeba_ortools_prefix" \
+  -DBUILD_DEPS=ON \
+  -DINSTALL_BUILD_DEPS=ON \
+  -DUSE_SCIP=ON \
+  -DBUILD_SAMPLES=OFF \
+  -DBUILD_EXAMPLES=OFF \
+  -DBUILD_TESTING=OFF
+cmake --build "$greeba_ortools_src/build" --parallel 4
+cmake --install "$greeba_ortools_src/build"
+```
+
+`BUILD_DEPS=ON` downloads and builds the required dependency libraries; `USE_SCIP=ON` includes the MILP solver used by GreeBa. `INSTALL_BUILD_DEPS=ON` installs those libraries alongside OR-Tools. Samples, examples, and upstream tests are disabled to reduce setup work; GreeBa's own tests remain enabled below. The installation prefix can instead be a persistent project directory accessible from the compute nodes. Adjust `--parallel 4` to the CPU and memory allocation, and use the same compiler environment for both builds.
+
+After installation, run this from the GreeBa source directory:
+
+```bash
+cmake -S . -B build/cluster -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$HOME/.local/or-tools-9.15"
+cmake --build build/cluster --parallel 4
+ctest --test-dir build/cluster --output-on-failure
+./build/cluster/app/test_app
+```
+
+Use your chosen prefix if it differs from the example. The matching tests exercise both OR-Tools min-cost flow and SCIP. This source-install recipe has been checked against OR-Tools v9.15's build configuration, but has not been executed on your cluster.
+
+If the cluster has no internet access, cloning only the OR-Tools repository elsewhere is insufficient: configuration downloads dependency sources too. A matching [Linux C++ binary distribution](https://developers.google.com/optimization/install/cpp/binary_linux) can be downloaded elsewhere and transferred if its architecture and system-library requirements match the cluster. Otherwise, stage all dependency sources or use a compatible Linux build environment with network access before transferring the installation. Do not transfer the macOS libraries.
+
+#### If OR-Tools is already installed
+
+If the modules make OR-Tools discoverable by CMake, configure without additional paths:
+
+```bash
+cmake -S . -B build/cluster -DCMAKE_BUILD_TYPE=Release
+```
+
+For an installation in a custom location, supply its prefix instead (replace the example path):
+
+```bash
+cmake -S . -B build/cluster -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="/path/to/or-tools"
+```
+
+The prefix is the installation directory containing `include` and `lib` or `lib64`. If dependencies are installed separately, pass a quoted semicolon-separated list of their prefixes, for example `-DCMAKE_PREFIX_PATH="/path/to/or-tools;/path/to/dependencies"`. Alternatively, set `-Dortools_DIR="/path/to/directory/containing/ortoolsConfig.cmake"`; dependency prefixes may still be needed. CMake prints the selected OR-Tools package directory during configuration.
+
+Then build, test, and run in a suitable cluster allocation:
+
+```bash
+cmake --build build/cluster --parallel 4
+ctest --test-dir build/cluster --output-on-failure
+./build/cluster/app/test_app
+```
+
+Choose a build parallelism that fits the allocated CPUs. Transfer the source and configure a new build on the cluster: the macOS executables and existing `CMakeCache.txt` are specific to the local machine. Changing compiler or dependency installations also calls for a fresh build directory.
+
+Some SCIP packages export a CMake target named `libscip`, while OR-Tools expects `SCIP::libscip`. GreeBa creates a forwarding target only when the former exists and the latter is missing. This avoids OR-Tools' compatibility warning and preserves the installed library's include paths and link requirements; it does not modify or reinstall SCIP or OR-Tools.
 
 ### Other platforms or custom installations
 
-Follow the official [OR-Tools C++ installation guide](https://developers.google.com/optimization/install/cpp) for binary distributions or source builds. Install the C++ headers, libraries, and CMake package, with SCIP support enabled. Set `CMAKE_PREFIX_PATH` to your installation prefix and, if needed, `CMAKE_MODULE_PATH` to its `lib/cmake/ortools/modules` directory when configuring GreeBa. If CMake cannot find `ortoolsConfig.cmake`, set `ortools_DIR` to the directory containing that file.
+Follow the official [OR-Tools C++ installation guide](https://developers.google.com/optimization/install/cpp) for binary distributions or source builds. Install the C++ headers, libraries, and CMake package, with SCIP support enabled. Set `CMAKE_PREFIX_PATH` to your installation and dependency prefixes. If CMake cannot find `ortoolsConfig.cmake`, set `ortools_DIR` to the directory containing that file. The dependency versions and compiler requirements are determined by the OR-Tools installation you use.
 
 ## Build
 
@@ -137,6 +229,10 @@ ctest --test-dir build --output-on-failure
 ├── app/                  # Executable and algorithm implementations
 │   ├── greedy_b_matching.cpp/h
 │   ├── anstee_b_matching.cpp/h
+│   ├── anstee_numeric_detail.h
+│   ├── anstee_numeric_tests.cpp
+│   ├── anstee_rounding_detail.h
+│   ├── anstee_rounding_tests.cpp
 │   ├── reduction_b_matching.cpp/h
 │   ├── milp_b_matching.cpp/h
 │   ├── reduction_tests.cpp
